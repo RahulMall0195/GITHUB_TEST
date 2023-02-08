@@ -1,0 +1,1933 @@
+______________________________________________________________Consignment_Controller__________________________________________________________________
+
+using MVCConsignment.App_Code;
+using MVCConsignment.Models;
+using MVCConsignment.UnitOfWorks;
+using MVCConsignment.ViewModel;
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data.Entity;
+using System.Data.Entity.Validation;
+using System.Linq;
+using System.Web.Mvc;
+
+namespace MVCConsignment.Controllers
+{
+    public class ConsignmentController : BaseController
+    {
+        CALYX_LOGISEntities db = null;
+        IUnitOfWork UOW = null;
+        CommonFunction comm = null;
+        DAL_ConsignmentNote dalCN = new DAL_ConsignmentNote();
+        //Logger logger = LogManager.GetCurrentClassLogger(); 
+        HRMEntities dbHRM = null;
+
+        public ConsignmentController(DbContext db1, IUnitOfWork iow)
+        {
+            UOW = iow;
+            db = (CALYX_LOGISEntities)db1;
+            comm = new CommonFunction(db, UOW);
+            dbHRM = new HRMEntities();
+        }
+
+        public ActionResult Index()
+        {
+            return View();
+        }
+
+        public ActionResult ConsignmentNoteEntry()
+        {
+            ViewBag.Header = "Consignment Note Entry";
+
+            VM_ConsignmentNote CN = new VM_ConsignmentNote();
+            CN.CNOR_list = new SelectList(db.Tbl_Customer_Mst.Where(x => (x.CUST_TYPE == "0" || x.CUST_TYPE == "1") && x.STATUS.ToLower() == "y").OrderBy(o => o.CUST_NAME), "CUST_ID", "CUST_NAME");
+            CN.CNEE_list = new SelectList(db.Tbl_Customer_Mst.Where(x => (x.CUST_TYPE == "0" || x.CUST_TYPE == "2") && x.STATUS.ToLower() == "y").OrderBy(o => o.CUST_NAME), "CUST_ID", "CUST_NAME");
+            CN.ProductDtls[0].PKG_list = new SelectList(db.Tbl_PKGType_Mst, "PKG_ID", "PKG_NAME");
+            CN.PaymentDtls.Bank_list = new SelectList(db.Tbl_Bank_Mst, "BANKCODE", "BANKNAME");
+            CN.INS_list = new SelectList(db.Tbl_InsuranceCompany_Mst, "INS_ID", "INS_NAME");
+            CN.PayMode_list = new SelectList(db.Tbl_PAYMODE_Mst, "PMOD_ID", "PMOD_NAME", Convert.ToDecimal("3"));
+
+            CN.LoadingPort_list = new SelectList(db.Tbl_PORT_MASTER.OrderBy(x => x.PORT_NAME), "PORT_ID", "PORT_NAME");
+            CN.DischargePort_list = new SelectList(db.Tbl_PORT_MASTER.OrderBy(x => x.PORT_NAME), "PORT_ID", "PORT_NAME");
+            CN.ContType_list = new SelectList(db.Tbl_ContainerType_Master, "CONT_TYPE_CODE", "CONT_TYPE_NAME", "DC");
+            CN.BookingBranch_list = new SelectList(db.tbl_Branch_Master.OrderBy(x => x.Branch_Name), "BRANCH_CODE", "BRANCH_NAME", "BR00000002");
+
+            SP_LogIn_Result LogIn = (SP_LogIn_Result)Session["UserCredentials"];
+            //CN.BookingLocList = new SelectList(db.tbl_Location_Mst, "LOC_ID", "LOC_NAME");
+
+            CN.BookingLocList = new SelectList(db.tbl_Location_Mst.Where(x => x.OUR_BRANCH == "Y" && x.LOGIN_BRANCH_CODE == LogIn.Branch_Code).OrderBy(x => x.LOC_NAME), "LOC_ID", "LOC_NAME", LogIn.Branch_Code);
+
+
+            CN.Container_list = new SelectList(db.tbl_Truck_Type_Mst.OrderBy(o => o.TT_NAME), "TT_NAME", "TT_NAME");
+
+            CN.MaterialTypeList = new SelectList(db.tbl_MaterialType_Mst.OrderBy(x => x.MT_NAME), "MT_NAME", "MT_NAME");
+            CN.LocationList = new SelectList(comm.LocationList(), "Value", "Text");
+            CN.CfsList = new SelectList(db.OTHER_CFS_MASTER.OrderBy(o => o.OTHER_CFS_NAME), "OTHER_CFS_CODE", "OTHER_CFS_NAME");
+            CN.StuffingPointList = new SelectList(db.tbl_Pickup_Delivery_Mst.OrderBy(o => o.PD_NAME), "PD_ID", "PD_NAME");
+
+            if (Session["EmployeeCode"] != null)
+            {
+                SP_LogIn_Result loggedIn = (SP_LogIn_Result)Session["UserCredentials"];
+                CN.PostedBy = loggedIn.EmpName;
+                CN.PaymentDay = 0;
+                CN.SalesPersonList = new SelectList(dbHRM.vw_Employee_Mst.Where(x => x.Comp_Code == "CO00000001").OrderBy(x => x.Employee_Name), "Employee_Code", "Employee_Name", Session["EmployeeCode"].ToString());
+                // DEPT000007 :- Marketing and Sales
+                // DEPT000024 :- Sales and Business Development
+                CN.DepartmentCode = loggedIn.Department_Code;
+                CN.SalesPersonId = Session["EmployeeCode"].ToString();
+            }
+            else
+            {
+                CN.SalesPersonList = new SelectList(dbHRM.vw_Employee_Mst.Where(x => x.Comp_Code == "CO00000001").OrderBy(x => x.Employee_Name), "Employee_Code", "Employee_Name");
+            }
+
+            return View(CN);
+        }
+
+        public JsonResult ContTypeList(int lt)
+        {
+            dynamic CTypeList = null;
+            if (lt == 1)
+            {
+                var list = new List<string>() { "20 FT", "40 FT" };
+                CTypeList = from c in db.tbl_Truck_Type_Mst.Where(w => w.TT_SIZE != "0" && list.Any(l=>l == w.TT_CODE) ).OrderBy(o => o.TT_NAME).AsEnumerable()
+                            select new { id = c.TT_CODE, name = c.TT_NAME };
+            }
+            else if (lt == 2)
+            {
+                CTypeList = from c in db.tbl_Truck_Type_Mst.OrderBy(o => o.TT_NAME).AsEnumerable()
+                            select new { id = c.TT_CODE, name = c.TT_NAME };
+            }
+            return Json(CTypeList, JsonRequestBehavior.AllowGet);
+        }
+
+        [HttpPost]
+        public ActionResult ConsignmentNoteEntry(VM_ConsignmentNote Consgn)
+        {
+
+            ViewBag.Header = "Consignment Note Entry";
+            Consgn.ProductDtls = (List<VM_ProductDtls>)TempData["product"];
+            ModelState["CN_ORIGIN"] = new ModelState();
+            ModelState["CN_DESTINATION"] = new ModelState();
+            ModelState["PaymentDtls.CHEQUE_AMT"] = new ModelState();
+
+            Nullable<DateTime> ExpectedLoadDateTime = null;
+            if (Consgn.ExpectedLoadDate != null && Consgn.ExpectedLoadTime != null)
+            {
+                ExpectedLoadDateTime = Consgn.ExpectedLoadDate.AddHours(Consgn.ExpectedLoadTime.Value.Hour).AddMinutes(Consgn.ExpectedLoadTime.Value.Minute);
+            }
+            if (ExpectedLoadDateTime == null)
+            {
+                ModelState.AddModelError("ExpectedLoadDate", "Please enter date and time");
+            }
+
+            var errors = ModelState.Where(x => x.Value.Errors.Count > 0).Select(x => new { x.Key, x.Value.Errors }).ToArray();
+
+            if (ModelState.IsValid)
+            {
+                try
+                {
+                    decimal BILL_PARTY_ID;
+                    if (Consgn.BILL_PARTY_TYPE == "CNOR")
+                    {
+                        BILL_PARTY_ID = Consgn.CNOR_ID;
+                    }
+                    else
+                    {
+                        BILL_PARTY_ID = Consgn.CNEE_ID;
+                    }
+
+
+                    //Added By Ashok 28/07/2021 For Billing Find Customer Contact No,email,credit days and sms send req
+                    Usp_Get_CustInfo_By_Custname_Result objCust = db.Usp_Get_CustInfo_By_Custname(Convert.ToString(BILL_PARTY_ID)).ToList<Usp_Get_CustInfo_By_Custname_Result>().FirstOrDefault();
+                    Consgn.Posting_For = objCust.CUST_NAME;
+                    Consgn.Contact_No = objCust.MOBILE_NO;
+                    Consgn.CustEmailId = objCust.EMAIL;
+                    Consgn.SMS_Send_Req = objCust.SMS_Send_Req;
+                    Consgn.PaymentDay = objCust.CREDEIT_DAYS ?? 0;
+
+                    //SP_LogIn_Result loggedIn = (SP_LogIn_Result)Session["UserCredentials"];
+                    //Consgn.PostedBy = loggedIn.EmpName;
+
+                    string result = dalCN.Insert_DAL_ConsignmentNoteEntry(Consgn, db, ExpectedLoadDateTime);
+                    if (result == "")
+                    {
+                        Success(string.Format("Consignment note is created successfully. Consignment Number is :  <b>" + Consgn.CN_CODE + "</b> and Job Order Number is :  <b>" + Consgn.JOB_CODE + " </b> "), true);
+                    }
+                    else
+                    {
+                        Danger(string.Format("<b>" + result + "</b>"), true);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    //logger.Error(ex, "Error : CN_Entry Save ", ex.Message);
+                    Danger(string.Format("<b>Error : 101-Exception occured. Error Desc:</b>" + ex.Message), true);
+                }
+            }
+            else
+            {
+                Danger(string.Format("<b>Error:102 :</b>" + string.Join("; ", ModelState.Values.SelectMany(z => z.Errors).Select(z => z.ErrorMessage))), true);
+            }
+
+            VM_ConsignmentNote CN = new VM_ConsignmentNote();
+            CN.CNOR_list = new SelectList(db.Tbl_Customer_Mst.Where(x => (x.CUST_TYPE == "0" || x.CUST_TYPE == "1") && x.STATUS.ToLower() == "y").OrderBy(o => o.CUST_NAME), "CUST_ID", "CUST_NAME");
+            CN.CNEE_list = new SelectList(db.Tbl_Customer_Mst.Where(x => (x.CUST_TYPE == "0" || x.CUST_TYPE == "2") && x.STATUS.ToLower() == "y").OrderBy(o => o.CUST_NAME), "CUST_ID", "CUST_NAME");
+            CN.ProductDtls[0].PKG_list = new SelectList(db.Tbl_PKGType_Mst, "PKG_ID", "PKG_NAME", "1");
+            CN.PaymentDtls.Bank_list = new SelectList(db.Tbl_Bank_Mst.OrderBy(x => x.BANKNAME), "BANKCODE", "BANKNAME");
+            CN.INS_list = new SelectList(db.Tbl_InsuranceCompany_Mst.OrderBy(x => x.INS_NAME), "INS_ID", "INS_NAME");
+            CN.PayMode_list = new SelectList(db.Tbl_PAYMODE_Mst, "PMOD_ID", "PMOD_NAME", "3");
+
+            CN.LoadingPort_list = new SelectList(db.Tbl_PORT_MASTER.OrderBy(x => x.PORT_NAME), "PORT_ID", "PORT_NAME");
+            CN.DischargePort_list = new SelectList(db.Tbl_PORT_MASTER.OrderBy(x => x.PORT_NAME), "PORT_ID", "PORT_NAME");
+            CN.ContType_list = new SelectList(db.Tbl_ContainerType_Master, "CONT_TYPE_CODE", "CONT_TYPE_NAME", "DC");
+            CN.BookingBranch_list = new SelectList(db.tbl_Branch_Master, "BRANCH_CODE", "BRANCH_NAME", "BR00000002");
+            CN.BookingLocList = new SelectList(db.tbl_Location_Mst.OrderBy(x => x.LOC_NAME), "LOC_ID", "LOC_NAME");
+
+            CN.MaterialTypeList = new SelectList(db.tbl_MaterialType_Mst.OrderBy(x => x.MT_NAME), "MT_NAME", "MT_NAME");
+            CN.LocationList = new SelectList(comm.LocationList(), "Value", "Text");
+            CN.CfsList = new SelectList(db.OTHER_CFS_MASTER.OrderBy(o => o.OTHER_CFS_NAME), "OTHER_CFS_CODE", "OTHER_CFS_NAME");
+            CN.StuffingPointList = new SelectList(db.tbl_Pickup_Delivery_Mst.OrderBy(o => o.PD_NAME), "PD_ID", "PD_NAME");
+
+            if (Session["EmployeeCode"] != null)
+            {
+                SP_LogIn_Result loggedIn = (SP_LogIn_Result)Session["UserCredentials"];
+                CN.PostedBy = loggedIn.EmpName;
+                CN.PaymentDay = 0;
+                CN.SalesPersonList = new SelectList(dbHRM.vw_Employee_Mst.Where(x => x.Comp_Code == "CO00000001").OrderBy(x => x.Employee_Name), "Employee_Code", "Employee_Name", Session["EmployeeCode"].ToString());
+                // DEPT000007 :- Marketing and Sales
+                // DEPT000024 :- Sales and Business Development
+                CN.DepartmentCode = loggedIn.Department_Code;
+                CN.SalesPersonId = Session["EmployeeCode"].ToString();
+            }
+            else
+            {
+                CN.SalesPersonList = new SelectList(dbHRM.vw_Employee_Mst.Where(x => x.Comp_Code == "CO00000001").OrderBy(x => x.Employee_Name), "Employee_Code", "Employee_Name");
+            }
+
+            //Success(string.Format("Consignment note is created successfully. Consignment Number is :  <b>" + Consgn.CN_CODE + "</b>"), true);
+            ModelState.Clear();
+            return View(CN);
+
+        }
+
+
+        //[HttpPost]
+        //public ActionResult ConsignmentNoteEntry(VM_ConsignmentNote Consgn)
+        //{
+        //    try
+        //    {
+        //        ViewBag.Header = "Consignment Note Entry";
+        //        Consgn.ProductDtls = (List<VM_ProductDtls>)TempData["product"];
+
+        //        string FromPDName = Consgn.FromPDName;
+        //        string ToPDName = Consgn.ToPDName;
+        //        if (FromPDName != null)
+        //        {
+        //            tbl_Pickup_Delivery_Mst tbls = (tbl_Pickup_Delivery_Mst)db.tbl_Pickup_Delivery_Mst.Where(X => X.PD_NAME == FromPDName).FirstOrDefault();
+        //            if (tbls == null)
+        //            {
+        //                tbl_Pickup_Delivery_Mst tbl = new tbl_Pickup_Delivery_Mst();
+        //                tbl.PD_NAME = FromPDName;
+        //                tbl.LOC_ID = db.tbl_Location_Mst.Where(x => x.LOC_CODE == Consgn.FromLocId).FirstOrDefault().LOC_ID;
+        //                tbl.PIN_CODE = Consgn.From_Pin;
+        //                tbl.STATUS = "Y";
+        //                db.tbl_Pickup_Delivery_Mst.Add(tbl);
+        //                db.SaveChanges();
+        //                Consgn.FromPDId = tbl.PD_ID;
+        //            }
+        //        }
+        //        if (ToPDName != null)
+        //        {
+        //            tbl_Pickup_Delivery_Mst tblTo = (tbl_Pickup_Delivery_Mst)db.tbl_Pickup_Delivery_Mst.Where(X => X.PD_NAME == ToPDName).FirstOrDefault();
+        //            if (tblTo == null)
+        //            {
+        //                tbl_Pickup_Delivery_Mst tbl = new tbl_Pickup_Delivery_Mst();
+        //                tbl.PD_NAME = ToPDName;
+        //                tbl.LOC_ID = db.tbl_Location_Mst.Where(x => x.LOC_CODE == Consgn.FromLocId).FirstOrDefault().LOC_ID;
+        //                tbl.PIN_CODE = Consgn.To_Pin;
+        //                tbl.STATUS = "Y";
+        //                db.tbl_Pickup_Delivery_Mst.Add(tbl);
+        //                db.SaveChanges();
+        //                Consgn.ToPDId = tbl.PD_ID;
+        //            }
+        //        }
+        //        string StuffingPointName = Consgn.StuffingPointName;
+        //        if (StuffingPointName != null)
+        //        {
+        //            tbl_Pickup_Delivery_Mst tbls = (tbl_Pickup_Delivery_Mst)db.tbl_Pickup_Delivery_Mst.Where(X => X.PD_NAME == StuffingPointName).FirstOrDefault();
+        //            if (tbls == null)
+        //            {
+        //                tbl_Pickup_Delivery_Mst tbl = new tbl_Pickup_Delivery_Mst();
+        //                tbl.PD_NAME = StuffingPointName;
+        //                tbl.LOC_ID = db.tbl_Location_Mst.Where(x => x.LOC_CODE == Consgn.StuffingLocId).FirstOrDefault().LOC_ID;
+        //                tbl.PIN_CODE = Consgn.StuffingPin;
+        //                tbl.STATUS = "Y";
+        //                db.tbl_Pickup_Delivery_Mst.Add(tbl);
+        //                db.SaveChanges();
+        //                Consgn.StuffingPointId = tbl.PD_ID.ToString();
+        //            }
+        //        }
+
+        //        string originName = Consgn.FromLocName ?? Consgn.OriginName;
+        //        string destinationName = Consgn.ToLocName ?? Consgn.DestinationName;
+
+        //        string route_name = string.Empty;
+        //        if ((Consgn.CN_ORIGIN ?? "") != "")
+        //        {
+        //            route_name += Consgn.OriginName;
+        //        }
+        //        if ((Consgn.StuffingPointId ?? "") != "")
+        //        {
+        //            route_name += " - " + Consgn.StuffingPointName;
+        //        }
+        //        if ((Consgn.CfsCode ?? "") != "")
+        //        {
+        //            route_name += " - " + Consgn.CfsName;
+        //        }
+        //        if ((Consgn.CN_DESTINATION ?? "") != "")
+        //        {
+        //            route_name += " - " + Consgn.DestinationName;
+        //        }
+
+        //        Tbl_ConsignmentNote_Mst cn_Mst = new Tbl_ConsignmentNote_Mst();
+        //        cn_Mst.ADDEDBY = Session["EmployeeCode"].ToString();
+        //        cn_Mst.ADDEDON = DateTime.Now;
+        //        cn_Mst.CN_DATE = Consgn.CN_DATE;
+        //        cn_Mst.TRANSPORT_MODE = Consgn.TRANSPORT_MODE;
+        //        cn_Mst.CN_SERVICE = Consgn.CN_SERVICE;
+        //        cn_Mst.LOADING_PORT = Consgn.LOADING_PORT;
+        //        cn_Mst.PICKUP_LOC = Consgn.PICKUP_LOC;
+        //        cn_Mst.DISCHARGE_PORT = Consgn.DISCHARGE_PORT;
+        //        cn_Mst.DELIVERY_LOC = Consgn.DELIVERY_LOC;
+        //        cn_Mst.CNOR_ID = Consgn.CNOR_ID;
+        //        cn_Mst.CNEE_ID = Consgn.CNEE_ID;
+        //        cn_Mst.INVOICE_NO = Consgn.INVOICE_NO;
+        //        cn_Mst.INVOICE_DATE = Consgn.INVOICE_DATE;
+        //        cn_Mst.PO_NO = Consgn.PO_NO;
+        //        cn_Mst.PO_DATE = Consgn.PO_DATE;
+        //        cn_Mst.INS_ID = Consgn.INS_ID;
+        //        cn_Mst.POLICY_NO = Consgn.POLICY_NO;
+        //        cn_Mst.POLICY_DATE = Consgn.POLICY_DATE;
+        //        cn_Mst.RISK_COVERAGE = Consgn.RISK_COVERAGE;
+        //        cn_Mst.SUB_TOTAL = Consgn.SUB_TOTAL;
+        //        cn_Mst.GRAND_TOTAL = Consgn.GRAND_TOTAL;
+        //        cn_Mst.TOTAL_TAX = Consgn.GRAND_TOTAL - Consgn.SUB_TOTAL;
+        //        cn_Mst.AMOUNT_IN_WORDS = Consgn.AMOUNT_IN_WORDS;
+
+        //        cn_Mst.DONO_BOOKING = Consgn.DONO_BOOKING;
+        //        cn_Mst.DONO_DELIVERY = Consgn.DONO_DELIVERY;
+        //        cn_Mst.THCNO_BOOKING = Consgn.THCNO_BOOKING;
+        //        cn_Mst.THCNO_DELIVERY = Consgn.THCNO_DELIVERY;
+        //        cn_Mst.TRUCKNO_BOOKING = Consgn.TRUCKNO_BOOKING;
+        //        cn_Mst.TRUCKNO_DELIVERY = Consgn.TRUCKNO_DELIVERY;
+        //        cn_Mst.SEALNO_BOOKING = Consgn.SEALNO_BOOKING;
+        //        cn_Mst.SEALNO_DELIVERY = Consgn.SEALNO_DELIVERY;
+        //        cn_Mst.CONTAINER_NO = Consgn.CONTAINER_NO;
+        //        var tt = db.tbl_Truck_Type_Mst.Where(w => w.TT_CODE == Consgn.TruckType);
+
+        //        cn_Mst.CONTAINER_SIZE = Convert.ToInt32(tt.FirstOrDefault().TT_SIZE ?? "0");
+        //        cn_Mst.TT_CODE = tt.FirstOrDefault().TT_CODE ?? "";
+
+
+        //        cn_Mst.STATUS = "Y";
+        //        cn_Mst.CN_CODE = db.usp_Auto_Alphanumeric_Code("Log.Tbl_ConsignmentNote_Mst", "CN_CODE", "CN", 10).ToList<usp_Auto_Alphanumeric_Code_Result>().First().AutoCode;
+        //        cn_Mst.RATETYPE = Consgn.RateType;
+        //        cn_Mst.CN_PAY_MODE = Consgn.CN_PAY_MODE;
+        //        cn_Mst.MOVEMENT_TYPE = Consgn.MOVEMENT_TYPE;
+        //        cn_Mst.CONT_TYPE_CODE = Consgn.CONT_TYPE_CODE;
+
+        //        cn_Mst.CNOR_ADDRESS = Consgn.CNOR_ADDRESS.Replace("<br/>", " ");
+        //        cn_Mst.CNOR_STATE_ID = Consgn.CNOR_STATE_ID;
+        //        cn_Mst.CNOR_GSTIN = Consgn.CNOR_GSTIN == "NA" ? null : Consgn.CNOR_GSTIN;
+
+        //        cn_Mst.CNEE_ADDRESS = Consgn.CNEE_ADDRESS.Replace("<br/>", " ");
+        //        cn_Mst.CNEE_STATE_ID = Consgn.CNEE_STATE_ID;
+        //        cn_Mst.CNEE_GSTIN = Consgn.CNEE_GSTIN == "NA" ? null : Consgn.CNEE_GSTIN;
+
+        //        cn_Mst.BOOKING_BRANCH = Consgn.BOOKING_BRANCH;
+        //        cn_Mst.BILL_PARTY_TYPE = Consgn.BILL_PARTY_TYPE;
+        //        //int routeID = db.Tbl_Route_Mst.Where(x => x.ROUTE_NAME == cn_Mst.CN_SERVICE).FirstOrDefault().ROUTE_ID;
+        //        int routeID = Convert.ToInt32(cn_Mst.CN_SERVICE);
+        //        cn_Mst.CN_ROUTEID = routeID;
+        //        cn_Mst.CN_ORIGIN = Consgn.CN_ORIGIN ?? Convert.ToString( Consgn.FromPDId);
+        //        cn_Mst.CN_DESTINATION = Consgn.CN_DESTINATION ?? Convert.ToString(Consgn.ToPDId);
+        //        cn_Mst.LOAD_TYPE = Consgn.LoadType;
+        //        cn_Mst.GST_STATUS = Consgn.GST_STATUS;
+
+        //        if (Consgn.BILL_PARTY_TYPE == "CNOR")
+        //        {
+        //            cn_Mst.BILL_PARTY_ID = Consgn.CNOR_ID;
+        //            cn_Mst.BILL_PARTY_ADDR_ID = Consgn.CNOR_ADDRESS_ID;
+                    
+        //        }
+        //        else
+        //        {
+        //            cn_Mst.BILL_PARTY_ID = Consgn.CNEE_ID;
+        //            cn_Mst.BILL_PARTY_ADDR_ID = Consgn.CNEE_ADDRESS_ID;
+        //        }
+
+                
+
+        //        cn_Mst.LOC_ID = Consgn.BookingLocation;
+        //        UOW.ConsignmentNoteRepository.Insert(cn_Mst);
+        //        decimal cnId = cn_Mst.CN_ID;
+        //        Tbl_CN_ProductDtls Prod = null;
+        //        int i = 1;
+        //        foreach (VM_ProductDtls pd in Consgn.ProductDtls)
+        //        {
+        //            Prod = new Tbl_CN_ProductDtls();
+        //            Prod.SR_NO = i;
+        //            Prod.PRODUCT_NAME = pd.PRODUCT_NAME == null ? "NA" : pd.PRODUCT_NAME;
+        //            Prod.PKG_ID = pd.PKG_ID;
+        //            Prod.ACTUAL_WT = pd.ACTUAL_WT;
+        //            Prod.CALC_CFT = pd.CALC_CFT;
+        //            Prod.CHARGED_WT = pd.CHARGED_WT;
+        //            Prod.HEIGHT = pd.HEIGHT;
+        //            Prod.LENGTH = pd.LENGTH;
+        //            Prod.UNITS = pd.UNITS;
+        //            Prod.WIDTH = pd.WIDTH;
+        //            Prod.CN_ID = cn_Mst.CN_ID;
+
+        //            UOW.CN_ProductDtlsRepository.Insert(Prod);
+        //            i++;
+        //        }
+
+        //        Tbl_CN_DocAttachment_Dtls _Doc = null;
+        //        foreach (VM_DocAttach doc in Consgn.doc)
+        //        {
+        //            if (doc.Checked)
+        //            {
+        //                _Doc = new Tbl_CN_DocAttachment_Dtls();
+        //                _Doc.CN_ID = cn_Mst.CN_ID;
+        //                _Doc.DOC_NAME = doc.Id;
+        //                _Doc.STATUS = "Y";
+        //                UOW.CN_DocAttachRepository.Insert(_Doc);
+        //            }
+        //        }
+        //        if (Consgn.PaymentDtls.PAYMENT_MODE != null)
+        //        {
+        //            Tbl_CN_Payment_Dtls PayDtls = new Tbl_CN_Payment_Dtls();
+        //            PayDtls.CN_ID = cn_Mst.CN_ID;
+        //            PayDtls.PAYMENT_MODE = Consgn.PaymentDtls.PAYMENT_MODE;
+        //            PayDtls.BANK_CODE = Consgn.PaymentDtls.BANK_CODE;
+        //            PayDtls.CHEQUE_NO = Consgn.PaymentDtls.CHEQUE_NO;
+        //            PayDtls.CHEQUE_DATE = Consgn.PaymentDtls.CHEQUE_DATE;
+        //            PayDtls.CHEQUE_AMT = Consgn.PaymentDtls.CHEQUE_AMT;
+        //            PayDtls.RECEIPT_NO = Consgn.PaymentDtls.RECEIPT_NO;
+
+        //            UOW.CN_PaymentDtlsRepository.Insert(PayDtls);
+
+        //            //Added By Pramesh Kuamr Dated: 09-06-2018
+        //            if (cn_Mst.CN_PAY_MODE == 1)// 1 for Paid
+        //            {
+        //                Tbl_AdvanceReceipt_hdr arHdr = new Tbl_AdvanceReceipt_hdr();
+        //                arHdr.RECEIPT_DATE = Convert.ToDateTime(Consgn.CN_DATE);
+        //                arHdr.PARTY_ID = Convert.ToInt32(cn_Mst.BILL_PARTY_ID);
+        //                arHdr.AMOUNT = Convert.ToDecimal(PayDtls.CHEQUE_AMT);
+        //                arHdr.TOTAL_AMOUNT = Convert.ToDecimal(PayDtls.CHEQUE_AMT);
+        //                arHdr.PAY_MODE = PayDtls.PAYMENT_MODE;
+        //                arHdr.PAY_DETAILS = PayDtls.RECEIPT_NO;
+        //                arHdr.ADDED_ON = DateTime.Now;
+        //                arHdr.ADDED_BY = Session["EmployeeCode"].ToString();
+        //                arHdr.CN_ID = cn_Mst.CN_ID;
+        //                arHdr.SOURCE = "Paid";
+
+        //                UOW.Tbl_AdvanceReceipt_hdr_Repository.Insert(arHdr);
+
+        //                if (arHdr.PAY_MODE != "Cash")
+        //                {
+        //                    Tbl_AdvanceReceipt_Dtls arDtls = new Tbl_AdvanceReceipt_Dtls();
+        //                    arDtls.ADV_ID = arHdr.ADV_ID;
+        //                    arDtls.CHQ_RTGS_DD_NO = PayDtls.CHEQUE_NO;
+        //                    arDtls.CHQ_RTGS_DD_DATE = Convert.ToDateTime(PayDtls.CHEQUE_DATE);
+        //                    arDtls.BANK_ID = PayDtls.BANK_CODE;
+        //                    arDtls.AMOUNT = PayDtls.CHEQUE_AMT;
+        //                    UOW.Tbl_AdvanceReceipt_Dtls_Repository.Insert(arDtls);
+        //                }
+
+        //                Tbl_AdvanceReceipt_CN_Adjust cnDtls = new Tbl_AdvanceReceipt_CN_Adjust();
+        //                cnDtls.ADV_ID = arHdr.ADV_ID;
+        //                cnDtls.CN_ID = cn_Mst.CN_ID;
+        //                cnDtls.ADJ_AMOUNT = PayDtls.CHEQUE_AMT;
+        //                UOW.Tbl_AdvanceReceipt_CN_Adjust_Repository.Insert(cnDtls);
+        //            }
+        //        }//End
+
+
+        //        Tbl_CN_Revenue_Dtls _RevDtls = null;
+        //        foreach (VM_Revenue_Dtls Rev in Consgn.RevenueDtls)
+        //        {
+        //            if (Rev.BILL_AMT > 0)
+        //            {
+        //                _RevDtls = new Tbl_CN_Revenue_Dtls();
+        //                _RevDtls.CN_ID = Rev.CN_ID;
+        //                _RevDtls.BITM_ID = Rev.BITM_ID;
+        //                _RevDtls.BILL_AMT = Rev.BILL_AMT;
+        //                _RevDtls.BILL_RATE = Rev.BILL_RATE;
+        //                _RevDtls.TOTAL_WT = Rev.TOTAL_WT;
+        //                UOW.CN_Revenue_DtlsRepository.Insert(_RevDtls);
+        //            }
+        //        }
+
+        //        Tbl_CN_TAX_Dtls _TAX = null;
+        //        foreach (VM_TAX_Dtls tax in Consgn.TAXDtls)
+        //        {
+        //            if (tax.TAX_VALUE > 0)
+        //            {
+        //                _TAX = new Tbl_CN_TAX_Dtls();
+        //                _TAX.CN_ID = tax.CN_ID;
+        //                _TAX.TAX_ID = tax.TAX_ID;
+        //                _TAX.AMOUNT = Consgn.SUB_TOTAL;
+        //                _TAX.TAX_PERCENTAGE = tax.TAX_PERCENTAGE;
+        //                _TAX.TAX_VALUE = tax.TAX_VALUE;
+        //                UOW.CN_TAX_DtlsRepository.Insert(_TAX);
+        //            }
+        //        }
+
+        //        //Added By Ashok 28/07/2021 For Billing Find Customer Contact No,email,credit days and sms send req
+        //        Usp_Get_CustInfo_By_Custname_Result objCust = db.Usp_Get_CustInfo_By_Custname(Convert.ToString(cn_Mst.BILL_PARTY_ID)).ToList<Usp_Get_CustInfo_By_Custname_Result>().FirstOrDefault();
+        //        Consgn.Contact_No = objCust.MOBILE_NO;
+        //        Consgn.CustEmailId = objCust.EMAIL;
+        //        Consgn.SMS_Send_Req = objCust.SMS_Send_Req;
+        //        Consgn.PaymentDay = objCust.CREDEIT_DAYS??0;
+
+        //        //End
+
+        //        UOW.Save();
+        //        if (cn_Mst.CN_ID > 0 && Consgn.LpId > 0)
+        //        {
+        //            Tbl_QuickLoadPosting qlp = db.Tbl_QuickLoadPosting.Find(Consgn.LpId);
+        //            qlp.CN_ID = cn_Mst.CN_ID;
+        //            db.Tbl_QuickLoadPosting.Add(qlp);
+        //            db.Entry(qlp).State = System.Data.EntityState.Modified;
+        //            db.SaveChanges();
+        //        }
+
+        //        VM_ConsignmentNote CN = new VM_ConsignmentNote();
+        //        CN.CNOR_list = new SelectList(db.Tbl_Customer_Mst.Where(x => (x.CUST_TYPE == "0" || x.CUST_TYPE == "1") && x.STATUS.ToLower() == "y").OrderBy(o => o.CUST_NAME), "CUST_ID", "CUST_NAME");
+        //        CN.CNEE_list = new SelectList(db.Tbl_Customer_Mst.Where(x => (x.CUST_TYPE == "0" || x.CUST_TYPE == "2") && x.STATUS.ToLower() == "y").OrderBy(o => o.CUST_NAME), "CUST_ID", "CUST_NAME");
+        //        CN.ProductDtls[0].PKG_list = new SelectList(db.Tbl_PKGType_Mst, "PKG_ID", "PKG_NAME", "1");
+        //        CN.PaymentDtls.Bank_list = new SelectList(db.Tbl_Bank_Mst, "BANKCODE", "BANKNAME");
+        //        CN.INS_list = new SelectList(db.Tbl_InsuranceCompany_Mst, "INS_ID", "INS_NAME");
+        //        CN.PayMode_list = new SelectList(db.Tbl_PAYMODE_Mst, "PMOD_ID", "PMOD_NAME", "3");
+
+        //        CN.LoadingPort_list = new SelectList(db.Tbl_PORT_MASTER, "PORT_ID", "PORT_NAME");
+        //        CN.DischargePort_list = new SelectList(db.Tbl_PORT_MASTER, "PORT_ID", "PORT_NAME");
+        //        CN.ContType_list = new SelectList(db.Tbl_ContainerType_Master, "CONT_TYPE_CODE", "CONT_TYPE_NAME", "DC");
+        //        CN.BookingBranch_list = new SelectList(db.tbl_Branch_Master, "BRANCH_CODE", "BRANCH_NAME", "BR00000002");
+        //        CN.BookingLocList = new SelectList(db.tbl_Location_Mst, "LOC_ID", "LOC_NAME");
+
+        //        CN.MaterialTypeList = new SelectList(db.tbl_MaterialType_Mst, "MT_NAME", "MT_NAME");
+        //        CN.LocationList = new SelectList(comm.LocationList(), "Value", "Text");
+        //        CN.CfsList = new SelectList(db.OTHER_CFS_MASTER.OrderBy(o => o.OTHER_CFS_NAME), "OTHER_CFS_CODE", "OTHER_CFS_NAME");
+        //        CN.StuffingPointList = new SelectList(db.tbl_Pickup_Delivery_Mst.OrderBy(o => o.PD_NAME), "PD_ID", "PD_NAME");
+
+        //        Success(string.Format("Consignment note is created successfully. Consignment Number is :  <b>" + cn_Mst.CN_CODE + "</b>"), true);
+        //        ModelState.Clear();
+        //        return View(CN);
+        //    }
+        //    catch (DbEntityValidationException e)
+        //    {
+        //        foreach (var eve in e.EntityValidationErrors)
+        //        {
+        //            Danger(string.Format("Entity of type \"{0}\" in state \"{1}\" has the following validation errors:",
+        //                eve.Entry.Entity.GetType().Name, eve.Entry.State), true);
+        //            foreach (var ve in eve.ValidationErrors)
+        //            {
+        //                Danger(string.Format("- Property: \"{0}\", Error: \"{1}\"", ve.PropertyName, ve.ErrorMessage), true);
+
+        //            }
+        //        }
+        //        throw;
+        //    }
+        //}
+
+        public ActionResult ConsignmentNoteEntry_PD(List<VM_ProductDtls> list)
+        {
+            TempData["product"] = list;
+            return View();
+        }
+        [AcceptVerbs(HttpVerbs.Get)]
+        public ActionResult GetCustomerCode(string Cust_ID, string from)
+        {
+
+            if (from == "ddl")
+            {
+                decimal localCustID = Convert.ToDecimal(Cust_ID);
+                var result = from s in db.Tbl_Customer_Mst.Where(x=>x.STATUS.ToLower() == "y")
+                             where s.CUST_ID == localCustID
+                             select new { CUST_CODE = s.CUST_CODE, CUST_ID = s.CUST_ID };
+                return Json(result, JsonRequestBehavior.AllowGet);
+            }
+            else
+            {
+                var result = from s in db.Tbl_Customer_Mst.Where(x => x.STATUS.ToLower() == "y")
+                             where s.CUST_CODE == Cust_ID
+                             select new { CUST_CODE = s.CUST_CODE, CUST_ID = s.CUST_ID };
+                return Json(result, JsonRequestBehavior.AllowGet);
+            }
+
+        }
+
+        [AcceptVerbs(HttpVerbs.Get)]
+        public ActionResult GetCustomerState_Dtls(decimal Cust_ID)
+        {
+            var result = from s in db.Tbl_Customer_Address_Dtls
+                         join sa in db.tbl_State_Mst on s.STATE_ID equals sa.State_ID
+                         where s.CUST_ID == Cust_ID
+                         select new { State_Code = sa.State_ID, State_Name = sa.State_Name };
+
+            return Json(result, JsonRequestBehavior.AllowGet);
+        }
+
+        [AcceptVerbs(HttpVerbs.Get)]
+        public ActionResult GetGSTIN_Dtls(decimal Cust_ID, string STATE_ID)
+        {
+            var result = from s in db.Tbl_Customer_Address_Dtls
+                         where s.CUST_ID == Cust_ID && s.STATE_ID == STATE_ID
+                         select new { GSTIN = (s.GSTIN ?? "") == "" ? "NA" : s.GSTIN };
+
+            return Json(result, JsonRequestBehavior.AllowGet);
+        }
+
+        [AcceptVerbs(HttpVerbs.Get)]
+        public ActionResult GetCustomerAddress_Dtls(string Cust_Code, string GSTIN)
+        {
+            GSTIN = GSTIN == "NA" ? "" : GSTIN;
+            var result = db.usp_CustomerAddress_Dtls(GSTIN, Cust_Code).ToList<usp_CustomerAddress_Dtls_Result>();
+            return Json(result, JsonRequestBehavior.AllowGet);
+        }
+
+        [AcceptVerbs(HttpVerbs.Get)]
+        public ActionResult GetStateIDByBranch(string Branch_Code)
+        {
+            var result = from s in db.tbl_Branch_Master
+                         where s.Branch_Code == Branch_Code
+                         select new { State_Id = s.State_Id };
+
+            return Json(result, JsonRequestBehavior.AllowGet);
+        }
+
+
+        //Added By Pramesh Kumar Vishwakarma, Date: 07-09-2017
+        public ActionResult ConsignmentNoteView()
+        {
+            ViewBag.Header = "Consignment Note View";
+            VM_ConsignmentNoteView cnv = new VM_ConsignmentNoteView();
+            return View(cnv);
+        }
+
+        [HttpPost]
+        [OutputCache(Duration = 30, VaryByParam = "DOC_No")]
+        public ActionResult ConsignmentNoteView(VM_ConsignmentNoteView cnv)
+        {
+            ViewBag.Header = "Consignment Note View";
+            var obj = db.usp_Select_ConsignmentNote_Details(cnv.DOC_No).ToList<usp_Select_ConsignmentNote_Details_Result>();
+
+            VM_ConsignmentNoteView_Details cnvd = new VM_ConsignmentNoteView_Details();
+            cnvd.CN_ID = -1;
+            if (obj != null && obj.Count() > 0)
+            {
+                cnvd.CN_ID = obj.FirstOrDefault().CN_ID;
+                cnvd.CN_DATE = obj.FirstOrDefault().CN_DATE;
+                cnvd.TRANSPORT_MODE = obj.FirstOrDefault().TRANSPORT_MODE;
+                cnvd.CN_SERVICE = obj.FirstOrDefault().CN_SERVICE;
+                cnvd.MOVEMENT_TYPE = obj.FirstOrDefault().MOVEMENT_TYPE;
+                cnvd.PICKUP_LOC = obj.FirstOrDefault().PICKUP_LOC;
+                cnvd.CONT_TYPE_CODE = obj.FirstOrDefault().CONT_TYPE_NAME;
+                cnvd.DELIVERY_LOC = obj.FirstOrDefault().DELIVERY_LOC;
+                cnvd.BOOKING_BRANCH = obj.FirstOrDefault().BOOKING_BRANCH;
+                cnvd.BILL_PARTY_TYPE = obj.FirstOrDefault().BILL_PARTY_TYPE;
+                //Consigner Details
+                cnvd.CNOR_ID = obj.FirstOrDefault().CNOR_ID;
+                cnvd.CNOR_NAME = obj.FirstOrDefault().CNOR_NAME;
+                //cnvd.CNOR_CODE = obj.FirstOrDefault().CNOR_CODE;
+                cnvd.CNOR_STATE_ID = obj.FirstOrDefault().CNOR_STATE_ID;
+                cnvd.CNOR_STATE_NAME = obj.FirstOrDefault().CNOR_State_NM;
+                cnvd.CNOR_CODE = obj.FirstOrDefault().CNOR_CODE;
+
+                cnvd.CNOR_GSTIN = obj.FirstOrDefault().CNOR_GSTIN;
+                cnvd.CNOR_ADDRESS = obj.FirstOrDefault().CNOR_ADDRESS;
+                cnvd.INVOICE_NO = obj.FirstOrDefault().INVOICE_NO;
+                cnvd.INVOICE_DATE = obj.FirstOrDefault().INVOICE_DATE;
+
+                //Consignee Details
+                cnvd.CNEE_ID = obj.FirstOrDefault().CNEE_ID;
+                cnvd.CNEE_STATE_ID = obj.FirstOrDefault().CNEE_STATE_ID;
+                cnvd.CNEE_STATE_NAME = obj.FirstOrDefault().CNEE_State_NM;
+                cnvd.CNEE_NAME = obj.FirstOrDefault().CNEE_NAME;
+                cnvd.CNEE_CODE = obj.FirstOrDefault().CNEE_CODE;
+                cnvd.CNEE_GSTIN = obj.FirstOrDefault().CNEE_GSTIN;
+                cnvd.CNEE_ADDRESS = obj.FirstOrDefault().CNEE_ADDRESS;
+                cnvd.PO_NO = obj.FirstOrDefault().PO_NO;
+                cnvd.PO_DATE = obj.FirstOrDefault().PO_DATE;
+                //Payment Mode
+                var payment = db.Tbl_CN_Payment_Dtls.Where(p => p.CN_ID == cnvd.CN_ID);
+                if (payment != null && payment.Count() > 0)
+                {
+                    cnvd.PAYMENT_MODE = payment.FirstOrDefault().PAYMENT_MODE;
+                    //cnvd.BANK_NAME = payment.FirstOrDefault().;
+                    cnvd.CHEQUE_NO = payment.FirstOrDefault().CHEQUE_NO;
+                    cnvd.CHEQUE_DATE = Convert.ToString(payment.FirstOrDefault().CHEQUE_DATE);
+                    cnvd.CHEQUE_AMT = payment.FirstOrDefault().CHEQUE_AMT;
+                    cnvd.RECEIPT_NO = payment.FirstOrDefault().RECEIPT_NO;
+                }
+
+                //Insurance
+                //cnvd.INS_COMPANY = obj.FirstOrDefault().tbl_in;
+                cnvd.POLICY_NO = obj.FirstOrDefault().POLICY_NO;
+                cnvd.POLICY_DATE = obj.FirstOrDefault().POLICY_DATE;
+                cnvd.RISK_COVERAGE = obj.FirstOrDefault().RISK_COVERAGE;
+
+                cnvd.DONO_BOOKING = obj.FirstOrDefault().DONO_BOOKING;
+                cnvd.DONO_DELIVERY = obj.FirstOrDefault().DONO_DELIVERY;
+                cnvd.SEALNO_BOOKING = obj.FirstOrDefault().SEALNO_BOOKING;
+                cnvd.SEALNO_DELIVERY = obj.FirstOrDefault().SEALNO_DELIVERY;
+                //Container Deatails
+                cnvd.CONTAINER_NO = obj.FirstOrDefault().CONTAINER_NO;
+                cnvd.CONTAINER_SIZE = obj.FirstOrDefault().CONTAINER_SIZE;
+
+                //Container 2 Deatails
+                cnvd.CONTAINER_NO_2 = obj.FirstOrDefault().CONTAINER_NO_2;
+                cnvd.CONTAINER_SIZE_2 = obj.FirstOrDefault().CONTAINER_SIZE_2;
+
+                //Added by Ashok Date : 05/08/2022
+                cnvd.LOAD_TYPE = obj.FirstOrDefault().LOAD_TYPE;
+
+                var attatched = db.Tbl_CN_DocAttachment_Dtls.Where(p => p.CN_ID == cnvd.CN_ID);
+                if (attatched != null && attatched.Count() > 0)
+                {
+                    cnvd.doc = new List<VM_DocAttach>();
+                    foreach (var s in attatched)
+                    {
+                        cnvd.doc.Add(new VM_DocAttach { Name = s.DOC_NAME.ToString(), Checked = true });
+                    }
+                }
+
+                //Product Deatails
+                for (int i = 0; i < cnvd.RateTypeList.Count; i++)
+                {
+                    if (cnvd.RateTypeList[i].Id == obj.FirstOrDefault().RATETYPE)
+                        cnvd.RateTypeList[i].Checked = true;
+                }
+
+                var product = db.Tbl_CN_ProductDtls.Where(p => p.CN_ID == cnvd.CN_ID);
+                if (product != null && product.Count() > 0)
+                {
+                    int i = 0;
+                    cnvd.ProductDtls = new List<VM_ProductDtls>();
+                    foreach (var p in product)
+                    {
+                        i++;
+                        var pc = db.Tbl_PKGType_Mst.Where(p1 => p1.PKG_ID == p.PKG_ID);
+                        cnvd.ProductDtls.Add(new VM_ProductDtls { SR_NO = i, PKG_NAME = pc.FirstOrDefault().PKG_NAME, PRODUCT_NAME = p.PRODUCT_NAME, UNITS = p.UNITS, ACTUAL_WT = p.ACTUAL_WT, CHARGED_WT = p.CHARGED_WT, LENGTH = p.LENGTH, WIDTH = p.WIDTH, HEIGHT = p.HEIGHT });
+                    }
+                }
+
+                cnvd.AMOUNT_IN_WORDS = obj.FirstOrDefault().AMOUNT_IN_WORDS;
+                cnvd.SUB_TOTAL = obj.FirstOrDefault().SUB_TOTAL;
+                cnvd.GRAND_TOTAL = obj.FirstOrDefault().GRAND_TOTAL;
+                cnvd.CN_PAY_MODE = obj.FirstOrDefault().PMOD_NAME;
+
+                var rev = db.Tbl_CN_Revenue_Dtls.Where(p => p.CN_ID == cnvd.CN_ID);
+                if (rev != null && rev.Count() > 0)
+                {
+                    cnvd.RevenueDtls = db.Tbl_BILLITEM_Mst.Select(j => new VM_Revenue_Dtls { BITM_ID = j.BITM_ID, BITM_NAME = j.BITM_NAME }).ToList();
+                    foreach (var r in rev)
+                    {
+                        for (int i = 0; i < cnvd.RevenueDtls.Count; i++)
+                        {
+                            if (r.BITM_ID == cnvd.RevenueDtls[i].BITM_ID)
+                            {
+                                cnvd.RevenueDtls[i].BILL_RATE = r.BILL_RATE;
+                                cnvd.RevenueDtls[i].BILL_AMT = r.BILL_AMT;
+                            }
+                        }
+                    }
+                }
+
+                var tax = db.Tbl_CN_TAX_Dtls.Where(p => p.CN_ID == cnvd.CN_ID);
+                if (tax != null && tax.Count() > 0)
+                {
+                    cnvd.TAXDtls = new List<VM_TAX_Dtls>();
+                    foreach (var p in tax)
+                    {
+                        cnvd.TAXDtls.Add(new VM_TAX_Dtls { Tax_NAME = p.Tbl_BILL_ITEM_TAX.TAX_NAME, TAX_VALUE = p.TAX_VALUE, AMOUNT = p.AMOUNT });
+                    }
+                }
+
+                cnvd.ORIGIN = obj.FirstOrDefault().ORIGIN;
+                cnvd.DESTINATION = obj.FirstOrDefault().DESTINATION;
+            }
+
+            cnv.Result = cnvd;
+            return View(cnv);
+        }
+
+        //----Modify By : Ashish Kalsarpe --- Date :15/12/2018 ----
+        //---- Description : parameter " string actionType " Added for job Report View.
+        [OutputCache(Duration = 10, VaryByParam = "DOC_No")]
+        public ActionResult ConsignmentNotePrint(string docNo, string source, string actionType)
+        {
+            VM_ConsignmentNoteView cnv = new VM_ConsignmentNoteView();
+            ViewBag.Header = "Consignment Note Print";
+            var obj = db.usp_Select_ConsignmentNote_Details(docNo).ToList<usp_Select_ConsignmentNote_Details_Result>();
+
+            VM_ConsignmentNoteView_Details cnvd = new VM_ConsignmentNoteView_Details();
+            cnvd.CN_ID = -1;
+            if (obj != null && obj.Count() > 0)
+            {
+                cnvd.CN_ID = obj.FirstOrDefault().CN_ID;
+                cnvd.CN_CODE = docNo;
+                cnvd.CN_DATE = obj.FirstOrDefault().CN_DATE;
+                cnvd.TRANSPORT_MODE = obj.FirstOrDefault().TRANSPORT_MODE;
+                cnvd.CN_SERVICE = obj.FirstOrDefault().CN_SERVICE;
+                cnvd.MOVEMENT_TYPE = obj.FirstOrDefault().MOVEMENT_TYPE;
+                cnvd.PICKUP_LOC = obj.FirstOrDefault().PICKUP_LOC;
+                cnvd.CONT_TYPE_CODE = obj.FirstOrDefault().CONT_TYPE_NAME;
+                cnvd.DELIVERY_LOC = obj.FirstOrDefault().DELIVERY_LOC;
+                cnvd.BOOKING_BRANCH = obj.FirstOrDefault().BOOKING_BRANCH;
+                cnvd.BOOKING_BRANCH_CODE = obj.FirstOrDefault().BOOKING_BRANCH_CODE;
+
+                cnvd.BILL_PARTY_TYPE = obj.FirstOrDefault().BILL_PARTY_TYPE;
+                //Consigner Details
+                cnvd.CNOR_ID = obj.FirstOrDefault().CNOR_ID;
+                cnvd.CNOR_NAME = obj.FirstOrDefault().CNOR_NAME;
+                //cnvd.CNOR_CODE = obj.FirstOrDefault().CNOR_CODE;
+                cnvd.CNOR_STATE_ID = obj.FirstOrDefault().CNOR_STATE_ID;
+                cnvd.CNOR_STATE_NAME = obj.FirstOrDefault().CNOR_State_NM;
+                cnvd.CNOR_CODE = obj.FirstOrDefault().CNOR_CODE;
+
+                cnvd.CNOR_GSTIN = obj.FirstOrDefault().CNOR_GSTIN;
+                cnvd.CNOR_ADDRESS = obj.FirstOrDefault().CNOR_ADDRESS;
+                cnvd.INVOICE_NO = obj.FirstOrDefault().INVOICE_NO;
+                cnvd.INVOICE_DATE = obj.FirstOrDefault().INVOICE_DATE;
+
+                //Consignee Details
+                cnvd.CNEE_ID = obj.FirstOrDefault().CNEE_ID;
+                cnvd.CNEE_STATE_ID = obj.FirstOrDefault().CNEE_STATE_ID;
+                cnvd.CNEE_STATE_NAME = obj.FirstOrDefault().CNEE_State_NM;
+                cnvd.CNEE_NAME = obj.FirstOrDefault().CNEE_NAME;
+                cnvd.CNEE_CODE = obj.FirstOrDefault().CNEE_CODE;
+                cnvd.CNEE_GSTIN = obj.FirstOrDefault().CNEE_GSTIN;
+                cnvd.CNEE_ADDRESS = obj.FirstOrDefault().CNEE_ADDRESS;
+                cnvd.PO_NO = obj.FirstOrDefault().PO_NO;
+                cnvd.PO_DATE = obj.FirstOrDefault().PO_DATE;
+                //Payment Mode
+
+                var payment = db.Tbl_CN_Payment_Dtls.Where(p => p.CN_ID == cnvd.CN_ID);
+
+                if (payment != null && payment.Count() > 0)
+                {
+
+                    if (Convert.ToString(payment.FirstOrDefault().PAYMENT_MODE) != "")
+                    {
+                        if (Convert.ToString(payment.FirstOrDefault().PAYMENT_MODE) == "C")
+                        {
+                            cnvd.PAYMENT_MODE = "Cash";
+                        }
+                        else if (Convert.ToString(payment.FirstOrDefault().PAYMENT_MODE) == "Q")
+                        {
+                            cnvd.PAYMENT_MODE = "Cheque";
+                        }
+                        else
+                        {
+                            cnvd.PAYMENT_MODE = "RTGS";
+                        }
+                    }
+                    else
+                    {
+                        cnvd.PAYMENT_MODE = "";
+                    }
+
+                    //cnvd.BANK_NAME = payment.FirstOrDefault().;
+                    cnvd.CHEQUE_NO = Convert.ToString(payment.FirstOrDefault().CHEQUE_NO);
+
+                    if (Convert.ToString(payment.FirstOrDefault().CHEQUE_DATE) != "")
+                    {
+                        DateTime dt = Convert.ToDateTime(payment.FirstOrDefault().CHEQUE_DATE);
+                        cnvd.CHEQUE_DATE = dt.ToString("dd/MM/yyyy");
+                        // cnvd.CHEQUE_DATE = Convert.ToString(payment.FirstOrDefault().CHEQUE_DATE);
+                    }
+                    else
+                    {
+                        cnvd.CHEQUE_DATE = "";
+                    }
+                    cnvd.CHEQUE_AMT = payment.FirstOrDefault().CHEQUE_AMT;
+                    cnvd.RECEIPT_NO = payment.FirstOrDefault().RECEIPT_NO;
+                }
+
+                //Insurance
+                //cnvd.INS_COMPANY = obj.FirstOrDefault().tbl_in;
+                cnvd.POLICY_NO = obj.FirstOrDefault().POLICY_NO;
+                cnvd.POLICY_DATE = obj.FirstOrDefault().POLICY_DATE;
+                cnvd.RISK_COVERAGE = obj.FirstOrDefault().RISK_COVERAGE;
+
+                cnvd.DONO_BOOKING = obj.FirstOrDefault().DONO_BOOKING;
+                cnvd.DONO_DELIVERY = obj.FirstOrDefault().DONO_DELIVERY;
+                cnvd.SEALNO_BOOKING = obj.FirstOrDefault().SEALNO_BOOKING;
+                cnvd.SEALNO_DELIVERY = obj.FirstOrDefault().SEALNO_DELIVERY;
+                //Container Deatails
+                cnvd.CONTAINER_NO = obj.FirstOrDefault().CONTAINER_NO;
+                cnvd.CONTAINER_SIZE = obj.FirstOrDefault().CONTAINER_SIZE;
+
+                //Container 2 Deatails
+                cnvd.CONTAINER_NO_2 = obj.FirstOrDefault().CONTAINER_NO_2;
+                cnvd.CONTAINER_SIZE_2 = obj.FirstOrDefault().CONTAINER_SIZE_2;
+
+                cnvd.LOAD_TYPE = obj.FirstOrDefault().LOAD_TYPE;
+
+                var attatched = db.Tbl_CN_DocAttachment_Dtls.Where(p => p.CN_ID == cnvd.CN_ID);
+                if (attatched != null && attatched.Count() > 0)
+                {
+                    cnvd.doc = new List<VM_DocAttach>();
+                    foreach (var s in attatched)
+                    {
+                        cnvd.doc.Add(new VM_DocAttach { Name = s.DOC_NAME.ToString(), Checked = true });
+                    }
+                }
+
+                //Product Deatails
+                for (int i = 0; i < cnvd.RateTypeList.Count; i++)
+                {
+                    if (cnvd.RateTypeList[i].Id == obj.FirstOrDefault().RATETYPE)
+                        cnvd.RateTypeList[i].Checked = true;
+                }
+
+                var product = db.Tbl_CN_ProductDtls.Where(p => p.CN_ID == cnvd.CN_ID);
+                if (product != null && product.Count() > 0)
+                {
+                    int i = 0;
+                    cnvd.ProductDtls = new List<VM_ProductDtls>();
+                    foreach (var p in product)
+                    {
+                        i++;
+                        var pc = db.Tbl_PKGType_Mst.Where(p1 => p1.PKG_ID == p.PKG_ID);
+                        cnvd.ProductDtls.Add(new VM_ProductDtls { SR_NO = i, PKG_NAME = pc.FirstOrDefault().PKG_NAME, PRODUCT_NAME = p.PRODUCT_NAME, UNITS = p.UNITS, ACTUAL_WT = p.ACTUAL_WT, CHARGED_WT = p.CHARGED_WT, LENGTH = p.LENGTH, WIDTH = p.WIDTH, HEIGHT = p.HEIGHT });
+                    }
+                }
+
+                cnvd.AMOUNT_IN_WORDS = obj.FirstOrDefault().AMOUNT_IN_WORDS;
+                cnvd.SUB_TOTAL = obj.FirstOrDefault().SUB_TOTAL;
+                cnvd.GRAND_TOTAL = obj.FirstOrDefault().GRAND_TOTAL;
+                cnvd.CN_PAY_MODE = obj.FirstOrDefault().PMOD_NAME;
+
+                var rev = db.Tbl_CN_Revenue_Dtls.Where(p => p.CN_ID == cnvd.CN_ID);
+                if (rev != null && rev.Count() > 0)
+                {
+                    cnvd.RevenueDtls = db.Tbl_BILLITEM_Mst.Select(j => new VM_Revenue_Dtls { BITM_ID = j.BITM_ID, BITM_NAME = j.BITM_NAME }).ToList();
+                    foreach (var r in rev)
+                    {
+                        for (int i = 0; i < cnvd.RevenueDtls.Count; i++)
+                        {
+                            if (r.BITM_ID == cnvd.RevenueDtls[i].BITM_ID)
+                            {
+                                cnvd.RevenueDtls[i].BILL_RATE = r.BILL_RATE;
+                                cnvd.RevenueDtls[i].BILL_AMT = r.BILL_AMT;
+                            }
+                        }
+                    }
+                }
+
+                var tax = db.Tbl_CN_TAX_Dtls.Where(p => p.CN_ID == cnvd.CN_ID);
+                if (tax != null && tax.Count() > 0)
+                {
+                    cnvd.TAXDtls = new List<VM_TAX_Dtls>();
+                    foreach (var p in tax)
+                    {
+                        cnvd.TAXDtls.Add(new VM_TAX_Dtls { Tax_NAME = p.Tbl_BILL_ITEM_TAX.TAX_NAME, TAX_VALUE = p.TAX_VALUE, AMOUNT = p.AMOUNT });
+                    }
+                }
+
+                cnvd.ORIGIN = obj.FirstOrDefault().ORIGIN;
+                cnvd.DESTINATION = obj.FirstOrDefault().DESTINATION;
+            }
+
+            cnv.Result = cnvd;
+
+            if (actionType == "JobReport")
+            {
+                List<VM_Navigation> navlist = (List<VM_Navigation>)TempData.Peek("Navigation");
+                var result = navlist.Where(x => x.page == "Consignment").FirstOrDefault();
+                cnv.Previous = result.previous;
+                cnv.Next = result.next;
+            }
+
+            if (source == "CP")
+            {
+                return View("ConsignmentNotePrint", cnv);
+            }
+            else if (source == "CPWO")
+            { 
+                return View("ConsignmentNotePrint", cnv);
+            }
+            else if (source == "IP")
+            {
+                return View("ConsignmentNoteInvoice", cnv);
+            }
+            else if (source == "RP")
+            {
+                return View("ConsignmentNoteInvoiceCumReceipt", cnv);
+            }
+            else
+            {
+                return View(cnv);
+            }
+        }
+
+        [AcceptVerbs(HttpVerbs.Get)]
+        public ActionResult GetStateIDByBranchLocation(decimal locId)
+        {
+            var result = from s in db.tbl_Location_Mst
+                         join b in db.tbl_Branch_Master on s.BRANCH_CODE equals b.Branch_Code
+                         where s.LOC_ID == locId
+                         select new { State_Id = b.State_Id, BRANCH_CODE = s.BRANCH_CODE, locCode = s.LOC_CODE, locID = s.LOC_ID, GSTIN_NO = b.GSTIN };
+
+            return Json(result, JsonRequestBehavior.AllowGet);
+        }
+
+        //Added By Ashok Date : 10-08-2021
+        [AcceptVerbs(HttpVerbs.Get)]
+        public ActionResult Get_cnewaybillno(string ewaybillno)
+        {
+            string ewaybill_no = "";
+            ewaybill_no = new DAL_ConsignmentNote().GET_CN_EWAY_BILL_NO(ewaybillno);
+            return Json(ewaybill_no, JsonRequestBehavior.AllowGet);
+        }
+
+        //Added By Ashok Date : 10-08-2021
+        [AcceptVerbs(HttpVerbs.Get)]
+        public ActionResult Get_ewaybillno_CN(string ewaybillno)
+        {
+            string ewaybill_no = "";
+            ewaybill_no = new DAL_ConsignmentNote().GET_EWAY_BILL_NO_CN(ewaybillno);
+            return Json(ewaybill_no, JsonRequestBehavior.AllowGet);
+        }
+
+
+        //Added By Gaurav Date : 04-09-2021
+        #region Consignment_Note_Mst_Ref
+
+        [Authorize]
+        [AcceptVerbs(HttpVerbs.Get)]
+        public ActionResult GetEwayBillDetails(string ewbNo, string ewbBkg_BR_GSTIN)
+        {
+
+            VM_EwayBill_Ref _objVM_EwayBill_Ref = new VM_EwayBill_Ref();
+
+            _objVM_EwayBill_Ref = new DAL_ConsignmentNote().GET_ConsignmentNote_Mst_Ref_By_EwBillNo(ewbNo);
+
+            if (_objVM_EwayBill_Ref.eway_bill_number == null)
+            {
+
+                string gstinNo = ewbBkg_BR_GSTIN;
+                eWaybillServices eWaybillS = new eWaybillServices();
+                eway_Auth_Resp _eway_Auth_Resp = new eway_Auth_Resp();
+                string errmsg = "";
+
+                eWaybillS.GetAuthToken(out _eway_Auth_Resp, out errmsg);
+
+                eWaybillS.GetEwayBillDetails(_eway_Auth_Resp, out errmsg, gstinNo, ewbNo, out _objVM_EwayBill_Ref);
+            }
+
+            return PartialView("_EwayBillDetails", _objVM_EwayBill_Ref);
+
+        }
+
+
+        [AcceptVerbs(HttpVerbs.Get)]
+        public ActionResult GetEwayBill_Details(string ewbNo)
+        {
+            VM_EwayBill_Ref _objVM_EwayBill_Ref = new VM_EwayBill_Ref();
+
+            _objVM_EwayBill_Ref = new DAL_ConsignmentNote().GET_ConsignmentNote_Mst_Ref_By_EwBillNo(ewbNo);
+
+            return Json(_objVM_EwayBill_Ref, JsonRequestBehavior.AllowGet);
+        }
+
+
+        [Authorize]
+        [ValidateAntiForgeryToken]
+        [HttpPost]
+        public ActionResult INSERT_ConsignmentNote_Mst_Ref(VM_EwayBill_Ref objVM_EwayBill_Ref)
+        {
+            string result = "";
+
+            result = new DAL_ConsignmentNote().INSERT_Tbl_ConsignmentNote_Mst_Ref(objVM_EwayBill_Ref);
+            return Json(result, JsonRequestBehavior.AllowGet);
+        }
+
+        [AcceptVerbs(HttpVerbs.Get)]
+        public ActionResult GetCustomerAddress_Dtls_by_GSTIN(string GSTIN)
+        {
+            GSTIN = GSTIN == "NA" ? "" : GSTIN;
+            var result = db.usp_CustomerAddress_Dtls_by_GSTIN(GSTIN).ToList<usp_CustomerAddress_Dtls_by_GSTIN_Result>();
+            return Json(result, JsonRequestBehavior.AllowGet);
+        }
+
+        [AcceptVerbs(HttpVerbs.Get)]
+        public JsonResult GET_STATE_LIMITS_BY_PIN(string S_PIN, string D_PIN)
+        {
+            string[] result = new string[3];
+
+            result = new DAL_ConsignmentNote().GET_STATE_LIMITS_BY_PIN(S_PIN, D_PIN);
+
+            return Json(result, JsonRequestBehavior.AllowGet);
+        }
+
+       
+        [HttpPost]
+        public JsonResult VALIDATE_AND_INSERT_CUSTOMER_MST(VM_Customer_GSTIN_Data objVM_Customer_GSTIN_Data)
+        {
+            
+            string result = "";
+
+            result = new DAL_ConsignmentNote().VALIDATE_AND_INSERT_CUSTOMER_MST(objVM_Customer_GSTIN_Data);
+
+            return Json(result, JsonRequestBehavior.AllowGet);
+
+        }
+
+        // Added by Gaurav - 22-10-2021
+        public JsonResult CnorList()
+        {
+
+            SelectList CNOR_list = new SelectList(db.Tbl_Customer_Mst.Where(x => (x.CUST_TYPE == "0" || x.CUST_TYPE == "1") && x.STATUS.ToLower() == "y").OrderBy(o => o.CUST_NAME), "CUST_ID", "CUST_NAME");
+
+            return Json(CNOR_list, JsonRequestBehavior.AllowGet);
+        }
+
+        // Added by Gaurav - 22-10-2021
+        public JsonResult CneeList()
+        {
+            SelectList CNEE_list = new SelectList(db.Tbl_Customer_Mst.Where(x => (x.CUST_TYPE == "0" || x.CUST_TYPE == "2") && x.STATUS.ToLower() == "y").OrderBy(o => o.CUST_NAME), "CUST_ID", "CUST_NAME");
+
+            return Json(CNEE_list, JsonRequestBehavior.AllowGet);
+        }
+
+        #endregion
+
+
+    }
+}
+
+
+______________________________________________________________BillGSTUpdate.cshtml__________________________________________________________________
+
+@model MVCConsignment.ViewModel.VM_BillGSTUpdate
+@using MVCConsignment.AlertMessage
+
+@{
+    ViewBag.Title = "Bill GST Update";
+    Layout = "~/Views/Shared/_MainDashboard.cshtml";
+}
+<link href="~/Content/PagedList.css" rel="stylesheet" />
+<link href="~/Content/ResponsiveTable.css" rel="stylesheet" />
+<script src="~/Scripts/Custom/num2Word.js"></script>
+<link href="~/Content/Page.css" rel="stylesheet" />
+<script src="~/Scripts/Custom/custom_Validate.js"></script>
+
+@using (Html.BeginForm(FormMethod.Post))
+{
+    @Html.AntiForgeryToken()
+    @Html.ValidationSummary(true)
+    <div class="row" style="padding-bottom:1px;">
+        @{ Html.RenderPartial("_Alerts");}
+    </div>
+    <div class="row" style="padding-bottom:1px; text-align:center">
+        <div class="alert alert-danger alert-dismissable" id="pageAlert" style="display:none;">
+            <button type="button" class="close" data-dismiss="alert" aria-hidden="true">&times;</button>
+            <b id="alertMessage"></b>
+        </div>
+    </div>
+      
+     <div class="row" style="padding-bottom:5px;">
+        <div class="col-md-1">
+            Bill No
+        </div>
+        <div class="col-md-3">
+            @Html.TextBoxFor(model => model.Search_Bill_No, new { @class = "form-control", @id = "Search_Bill_No", autocomplete = "off", @maxlength = "20" })
+            <div class="speech-bubble"> 
+                @Html.ValidationMessageFor(model => model.Search_Bill_No, "", new { @id = "ErrorSearch_Bill_No" })
+            </div>
+        </div> 
+        <div class="col-md-3" style="text-align:left;">
+            <input type="submit" class="btn btn-success" name="Show" value="Show" style="margin-top:0px;margin-left:10px;width:80px;padding:3px;" id="btnSearch" />
+        </div>
+    </div>
+
+    if (!string.IsNullOrEmpty(@Model.BILL_NO))
+    {
+
+        <div class="row BillDetails DetailsForUpdate" style="text-align:left;">
+            <div style="padding-bottom:0px; ">
+                <div class=" form-group">
+                    <div class="col-md-12 col-xs-12 page-header" style="margin: 0px;">
+                        Bill Details
+                    </div>
+                </div>
+            </div>
+        </div>
+
+
+        <div id="no-4-tables" class="row DetailsForUpdate">
+            <table class="col-md-12 table-bordered table-striped table-condensed cf">
+                <tbody>
+                    <tr>
+                        <td colspan="2" data-title="Bill No" class="col-md-2">Bill No</td>
+                        <td colspan="2" data-title="Bill No" class="col-md-2">
+                            <div id="divBillNo">&nbsp;@Html.DisplayFor(x => x.BILL_NO) </div>
+                        </td>
+                        <td colspan="2" data-title="Bill Date" class="col-md-2">Bill Date</td>
+                        <td colspan="2" data-title="Bill Date" class="col-md-2">
+                            <div id="divBillDate">&nbsp;@Html.DisplayFor(x => x.BILL_DATE)</div>
+                        </td>
+                        <td colspan="2" data-title="Amount" class="col-md-2">Amount</td>
+                        <td colspan="2" data-title="Amount" class="col-md-2">
+                            <div id="divAmount">&nbsp;@Html.DisplayFor(x => x.AMOUNT)</div>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td colspan="2" data-title="prevCustomerName" class="col-md-2">Customer Name</td>
+                        <td colspan="10" data-title="prevCustomerName" class="col-md-2">
+                            <div id="divprevCustomerNam">&nbsp;@Html.DisplayFor(x => x.prev_CustomerName)</div>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td colspan="2" data-title="prevGSTNo" class="col-md-2">GST No</td>
+                        <td colspan="2" data-title="prevGSTNo" class="col-md-2">
+                            <div id="divprevGSTNo">&nbsp;@Html.DisplayFor(x => x.prev_GST_No)</div>
+                        </td>
+
+                        <td colspan="2" data-title="prevAddress" class="col-md-2">Address</td>
+                        <td colspan="6" data-title="prevAddress" class="col-md-2">
+                            <div id="divprevAddress">&nbsp;@Html.DisplayFor(x => x.prev_Address)</div>
+                        </td>
+                     </tr>
+               </tbody>
+            </table>
+          </div>
+
+    
+        <div class="row DetailsForUpdate" style="text-align:left;">
+            <div style="padding-bottom:0px; ">
+                <div class=" form-group">
+                    <div class="col-md-12 col-xs-12 page-header" style="margin: 0px;">
+                       Update Details 
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    <div id="no-4-tables" class="row DetailsForUpdate">
+        <table class="col-md-12 table-bordered table-striped table-condensed cf">
+            <tbody>
+                <tr>
+                    <td colspan="2" data-title="Customer Name" class="col-md-2">Customer Name</td>
+                    <td colspan="10" data-title="Customer Name">
+                        @Html.DropDownListFor(model => model.CustomerName, Model.Customer_list, "Select Customer Name", new { @class = "form-control", @id = "ddlCustomerName" })
+                        <div class="speech-bubble">
+                            @Html.ValidationMessageFor(model => model.CustomerName, "", new { @id = "ErrorddlCustomerName" })
+                        </div>
+                    </td>
+                    <td colspan="2" class="col-md-2 col-lg-2">Party State Name</td>
+                    <td data-title="Party State Name" class="col-md-2 col-lg-2" colspan="2">
+                        @Html.DropDownListFor(model => Model.StateId, new SelectList(Enumerable.Empty<SelectListItem>(), "Value", "Text"), "---- Select ----", new { @class = "form-control", @id = "ddlStateList" })
+                        <div class="speech-bubble">
+                            <span class="field-validation-error" id="ErrorddlStateList"></span>
+                        </div>
+                    </td>
+                    
+                </tr>
+                <tr>
+                    <td colspan="2" class="col-md-2 col-lg-2">Party GSTIN</td>
+                    <td data-title="Party GSTIN" class="col-md-2 col-lg-2" colspan="2">
+                        @Html.DropDownListFor(model => Model.GST_NO, new SelectList(Enumerable.Empty<SelectListItem>(), "Value", "Text"), "---- Select ----", new { @class = "form-control", @id = "ddlGSTIN" })
+                        <div class="speech-bubble">
+                            <span class="field-validation-error" id="ErrorGSTINNo"></span>
+                        </div>
+                    </td>
+
+                        <td colspan="2" data-title="Address" class="col-md-2">Address</td>
+                    <td colspan="10" data-title="Address">
+                        @Html.DropDownListFor(model => model.Party_Address_ID, new SelectList(Enumerable.Empty<SelectListItem>(), "Value", "Text"), "---- Select ----", new { @class = "form-control", @id = "ddlParty_Address" })
+                        <div class="speech-bubble">
+                            @Html.ValidationMessageFor(model => model.Party_Address_ID, "", new { @id = "ErrorddlParty_Address" })
+                        </div>
+                    </td>
+                </tr>
+
+                <tr>
+                    <td colspan="18">
+                        <div id="div_btnUpdate" class="row" style="padding-bottom:5px; text-align:center;">
+                            <div class="form-group">
+                                <div class="col-md-12">
+                                    <input type="submit" name="Update" class="btn btn-success" value="Update" style="margin-top:10px;margin-left:10px;width:80px;" id="btnUpdate" />
+                                </div>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+           </tbody>
+        </table>
+    </div>
+}
+}
+
+
+@section Scripts {
+    @Scripts.Render("~/bundles/jqueryval")
+}
+
+    <script type="text/javascript">
+    $(document).ready(function () {
+        $(".speech-bubble").hide();
+        $("input[type=text]").on('keyup keypress blur change keydown', function (e) {
+            Validate();
+        });
+
+        function Validate() {
+            $(".speech-bubble").hide();
+            $(".speech-bubble").each(function () {
+                if ($(this).find('.field-validation-error').text() == "") {
+                    $(this).hide();
+                    return true;
+                }
+                else {
+                    $(this).show();
+                    return false;
+                }
+            });
+        }
+         
+
+        $('#btnSearch').click(function () {
+            $('.DetailsForUpdate').hide();
+        });
+
+        $("#ddlCustomerName").change(function () {
+            StateDtl();
+        });
+
+
+        
+        function StateDtl(){
+            $("#ddlStateList").empty();
+            
+            var partyId = $("#ddlCustomerName").val();
+
+            
+            if(parseInt(partyId) != ""){
+            $.ajax({
+                    async: false,
+                    cache: false,
+                    type: "GET",
+                    url: '@Url.Action("GetCustomerState_Dtls", "Consignment")',
+                    data: { "Cust_ID": partyId },
+                    success: function (json, textStatus, xhr) {
+                        $("#ddlStateList").append('<option value=""> ---- Select ----- </option>');
+                        json = json || {};
+                       
+                        if (json.length > 0) {
+                            var j = 0;
+                            for (var i = 0; i < json.length; i++) {
+                               $("#ddlStateList").append('<option value="' + json[i].State_Code + '">' + json[i].State_Name + '</option>');
+                            }
+                        }
+                     }
+                });
+            }
+            else {
+                $("#ddlStateList").append('<option value=""> ---- Select ----- </option>');
+            }
+        }
+        
+        $("#ddlStateList").change(function (){
+            GSTIN();
+        });
+
+        function GSTIN() {
+            $("#ddlGSTIN").empty();
+            var partyId = $("#ddlCustomerName").val();
+            var stateId = $("#ddlStateList option:selected").val();
+
+            $.ajax({
+                async: false,
+                cache: false,
+                type: "GET",
+                url: '@Url.Action("BindGSTINList", "Revenue")',
+                data: { "partyId": partyId, "stateId": stateId },
+                success: function (json, textStatus, xhr) {
+                    $("#ddlGSTIN").append('<option value=""> ---- Select ----- </option>');
+                    json = json || {};
+                    if (json.length > 0) {
+
+                        var j = 0;
+                        for (var i = 0; i < json.length; i++) {
+                            if (json[i].Text == null || $.trim(json[i].Text) == '') {
+                                j++;
+                                $("#ddlGSTIN").append('<option value="' + json[i].Value + '">Unregistered - ' + j + '</option>');
+                            }
+                            else {
+                                $("#ddlGSTIN").append('<option value="' + json[i].Value + '">' + json[i].Text + '</option>');
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        $("#ddlGSTIN").change(PartyAddressBasedOnGSTIN);
+    
+
+    function isNumberKey(evt) {
+        var charCode = (evt.which) ? evt.which : event.keyCode;
+        if (charCode > 31 && (charCode < 48 || charCode > 57))
+            return false;
+        return true;
+    }
+    });
+</script>
+
+
+______________________________________________________________VM_BillGSTUpdate__________________________________________________________________
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Web;
+using System.Web.Mvc;
+using MVCConsignment.Models;
+
+namespace MVCConsignment.ViewModel
+{
+    public class VM_BillGSTUpdate
+    {
+        [Display(Name = "Enter Bill No")]
+        [Required(ErrorMessage = "Enter Bill No .")]
+        public string Search_Bill_No { get; set; }
+
+     
+        public string BILL_NO { get; set; }
+
+        public string BILL_DATE { get; set; }
+
+        public Decimal AMOUNT { get; set; } 
+
+        public string prev_CustomerName { get; set; }
+
+        public string prev_GST_No { get; set; }
+
+        public string prev_Address { get; set; }
+
+        [Display(Name = "Select Customer Name")]
+        [Required(ErrorMessage = "Select Customer Name")]
+        public decimal CustomerName { get; set; }
+
+        public string StateId { get; set; }
+        public SelectList StateList { get; set; }
+
+        [Display(Name = "Select GST_NO")]
+        [Required(ErrorMessage = "Select GST_NO")] 
+        public string GST_NO { get; set; }
+
+        [Display(Name = "Select Party Address")]
+        [Required(ErrorMessage = "Select Party Address")]
+        public decimal Party_Address_ID { get; set; }
+
+
+
+        public SelectList Customer_list { get; set; }
+        public SelectList GST_NO_List { get; set; } 
+        public SelectList Party_AddressList { get; set; }
+
+
+       
+
+        public SelectList Address { get; set; }
+
+    }
+}
+
+
+______________________________________________________________DAL_ERROR.cs__________________________________________________________________
+
+using MVCConsignment.ViewModel;
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Data.SqlClient;
+using System.Data.SqlTypes;
+using System.Linq;
+using System.Text;
+using System.Web;
+
+namespace MVCConsignment.App_Code.FAMS
+{
+    public class DAL_ERROR
+    {
+        string logisConnStr = ConfigurationManager.ConnectionStrings["CALYX_LOGIS"].ToString();
+
+        SqlTransaction mytrans = null;
+
+        public DAL_ERROR(){}
+
+        #region Advance Receipt Tds Update
+        public DataTable Fill_Receipt_For_Tds_Update(string branch, int partyId, string fromDate, string toDate)
+        {
+            SqlConnection conn = new SqlConnection(logisConnStr);
+            SqlDataAdapter dAd = new SqlDataAdapter("usp_Select_Receipt_For_Tds_Update", conn);
+            dAd.SelectCommand.CommandType = CommandType.StoredProcedure;
+            DataSet dSet = new DataSet();
+            try
+            {
+                dAd.SelectCommand.Parameters.AddWithValue("@LOGIN_BRANCH", branch);
+                dAd.SelectCommand.Parameters.AddWithValue("@PARTY_ID", partyId);
+                dAd.SelectCommand.Parameters.AddWithValue("@FROM_DATE", fromDate);
+                dAd.SelectCommand.Parameters.AddWithValue("@TO_DATE", toDate);
+                dAd.Fill(dSet, "Receipt_For_Tds_Update");
+                return dSet.Tables["Receipt_For_Tds_Update"];
+            }
+            catch
+            {
+                throw;
+            }
+            finally
+            {
+                dSet.Dispose();
+                dAd.Dispose();
+                conn.Close();
+                conn.Dispose();
+            }
+        }
+        public decimal UPDATE_RECEIPT_TDS(VM_ReceiptTdsUpdate rtu)
+        {
+            decimal RET_ID = 0;
+            SqlConnection conn = new SqlConnection(logisConnStr);
+            conn.Open();
+            mytrans = conn.BeginTransaction();
+            SqlCommand dCmd1 = null;
+            try
+            {
+                dCmd1 = new SqlCommand("[DBO].[USP_UPDATE_ADVANCE_RECEIPT_TDS]", conn);
+                dCmd1.CommandType = CommandType.StoredProcedure;
+                dCmd1.Transaction = mytrans;
+
+                SqlParameter sqlp1 = new SqlParameter();
+                sqlp1 = dCmd1.Parameters.Add("@RET_ID", SqlDbType.Decimal);
+                sqlp1.Direction = ParameterDirection.Output;
+
+                SqlParameter sqlp2 = new SqlParameter();
+                sqlp2 = dCmd1.Parameters.Add("@ERR_MSG", SqlDbType.VarChar,150);
+                sqlp2.Direction = ParameterDirection.Output;
+
+                dCmd1.Parameters.AddWithValue("@ADV_DTL_ID", rtu.ADV_DTL_ID);
+                dCmd1.Parameters.AddWithValue("@ADV_ID", rtu.ADV_ID);
+                dCmd1.Parameters.AddWithValue("@AMOUNT", rtu.Amount);
+                dCmd1.Parameters.AddWithValue("@TDS_AMOUNT", rtu.TdsAmount);
+                dCmd1.Parameters.AddWithValue("@TOTAL_AMOUNT", rtu.TotalAmount);
+                dCmd1.Parameters.AddWithValue("@REMARKS", rtu.Remarks);
+                dCmd1.Parameters.AddWithValue("@ADDED_BY", HttpContext.Current.Session["EmployeeCode"].ToString());
+
+                dCmd1.ExecuteNonQuery();
+
+                RET_ID = (decimal)dCmd1.Parameters["@RET_ID"].Value;
+                rtu.ErrMsg = (string)dCmd1.Parameters["@ERR_MSG"].Value;
+
+                if (RET_ID > 0)
+                {
+                    mytrans.Commit();
+                }
+                else
+                {
+                    mytrans.Rollback();
+                }
+            }
+            catch
+            {
+                mytrans.Rollback();
+                throw;
+            }
+            finally
+            {
+                dCmd1.Dispose();
+                if (conn.State == ConnectionState.Open)
+                {
+                    conn.Close();
+                }
+                conn.Dispose();
+            }
+            return RET_ID;
+        }
+        #endregion
+
+        #region Job Order Container Update
+        public DataTable SELECT_JOB_ORDER_DETAILS_FOR_CONT_UPDATE(string branch, string jobCode)
+        {
+            SqlConnection conn = new SqlConnection(logisConnStr);
+            SqlDataAdapter dAd = new SqlDataAdapter("USP_SELECT_JOB_ORDER_DETAILS_FOR_CONT_UPDATE", conn);
+            dAd.SelectCommand.CommandType = CommandType.StoredProcedure;
+            DataSet dSet = new DataSet();
+            try
+            {
+                dAd.SelectCommand.Parameters.AddWithValue("@BRANCH_CODE", branch);
+                dAd.SelectCommand.Parameters.AddWithValue("@JOB_CODE", jobCode);
+                dAd.Fill(dSet, "JOB_ORDER_DETAILS_FOR_CONT_UPDATE");
+                return dSet.Tables["JOB_ORDER_DETAILS_FOR_CONT_UPDATE"];
+            }
+            catch
+            {
+                throw;
+            }
+            finally
+            {
+                dSet.Dispose();
+                dAd.Dispose();
+                conn.Close();
+                conn.Dispose();
+            }
+        }
+        public decimal UPDATE_JOB_ORDER_CONT_NO(VM_JobOrderContainerUpdate jcu)
+        {
+            decimal RET_ID = 0;
+            SqlConnection conn = new SqlConnection(logisConnStr);
+            conn.Open();
+            mytrans = conn.BeginTransaction();
+            SqlCommand dCmd1 = null;
+            try
+            {
+                dCmd1 = new SqlCommand("[DBO].[USP_UPDATE_JOB_ORDER_CONT_NO]", conn);
+                dCmd1.CommandType = CommandType.StoredProcedure;
+                dCmd1.Transaction = mytrans;
+
+                SqlParameter sqlp1 = new SqlParameter();
+                sqlp1 = dCmd1.Parameters.Add("@RET_ID", SqlDbType.Decimal);
+                sqlp1.Direction = ParameterDirection.Output;
+
+                SqlParameter sqlp2 = new SqlParameter();
+                sqlp2 = dCmd1.Parameters.Add("@ERR_MSG", SqlDbType.VarChar, 150);
+                sqlp2.Direction = ParameterDirection.Output;
+
+                dCmd1.Parameters.AddWithValue("@JOB_ID", jcu.Job_Id);
+                dCmd1.Parameters.AddWithValue("@CONT_NO", jcu.New_Cont_No);
+                dCmd1.Parameters.AddWithValue("@REMARKS", jcu.Remarks);
+                dCmd1.Parameters.AddWithValue("@ADDED_BY", HttpContext.Current.Session["EmployeeCode"].ToString());
+
+                dCmd1.ExecuteNonQuery();
+
+                RET_ID = (decimal)dCmd1.Parameters["@RET_ID"].Value;
+                jcu.ErrMsg = (string)dCmd1.Parameters["@ERR_MSG"].Value;
+
+                if (RET_ID > 0)
+                {
+                    mytrans.Commit();
+                }
+                else
+                {
+                    mytrans.Rollback();
+                }
+            }
+            catch
+            {
+                mytrans.Rollback();
+                throw;
+            }
+            finally
+            {
+                dCmd1.Dispose();
+                if (conn.State == ConnectionState.Open)
+                {
+                    conn.Close();
+                }
+                conn.Dispose();
+            }
+            return RET_ID;
+        }
+        #endregion
+
+        #region Bill Transport Charge Update
+        public DataSet SELECT_BILL_DETAILS_FOR_TRANSPORT_CHARGE_UPDATE(string branch, string billNo)
+        {
+            SqlConnection conn = new SqlConnection(logisConnStr);
+            SqlDataAdapter dAd = new SqlDataAdapter("USP_SELECT_BILL_DETAILS_FOR_TRANSPORT_CHARGE_UPDATE", conn);
+            dAd.SelectCommand.CommandType = CommandType.StoredProcedure;
+            DataSet dSet = new DataSet();
+            try
+            {
+                dAd.SelectCommand.Parameters.AddWithValue("@BRANCH_CODE", branch);
+                dAd.SelectCommand.Parameters.AddWithValue("@BILL_NO", billNo);
+                dAd.Fill(dSet, "BILL_DETAILS_FOR_TRANSPORT_CHARGE_UPDATE");
+                return dSet;
+            }
+            catch
+            {
+                throw;
+            }
+            finally
+            {
+                dSet.Dispose();
+                dAd.Dispose();
+                conn.Close();
+                conn.Dispose();
+            }
+        }
+
+        public decimal UPDATE_BILL_TRANSPORT_CHARGE(VM_BillTransportChargeUpdate bcu)
+        {
+            decimal RET_ID = 0;
+            SqlConnection conn = new SqlConnection(logisConnStr);
+            conn.Open();
+            mytrans = conn.BeginTransaction();
+            SqlCommand dCmd1 = null;
+            try
+            {
+                dCmd1 = new SqlCommand("[dbo].[USP_UPDATE_BILL_TRANSPORT_CHARGE]", conn);
+                dCmd1.CommandType = CommandType.StoredProcedure;
+                dCmd1.Transaction = mytrans;
+
+                SqlParameter sqlp1 = new SqlParameter();
+                sqlp1 = dCmd1.Parameters.Add("@RET_ID", SqlDbType.Decimal);
+                sqlp1.Direction = ParameterDirection.Output;
+
+                SqlParameter sqlp2 = new SqlParameter();
+                sqlp2 = dCmd1.Parameters.Add("@ERR_MSG", SqlDbType.VarChar, 150);
+                sqlp2.Direction = ParameterDirection.Output;
+
+                dCmd1.Parameters.AddWithValue("@BILL_ID", bcu.Bill_Id);
+                dCmd1.Parameters.AddWithValue("@BILL_NO", bcu.Bill_No);
+
+                dCmd1.Parameters.AddWithValue("@AMOUNT", bcu.AMOUNT);
+                dCmd1.Parameters.AddWithValue("@HALT_AMT", (bcu.HALT_AMT == null) ? (object)DBNull.Value : bcu.HALT_AMT);
+                dCmd1.Parameters.AddWithValue("@OTHER_AMT", (bcu.OTHER_AMT == null) ? (object)DBNull.Value : bcu.OTHER_AMT);
+                dCmd1.Parameters.AddWithValue("@DISCOUNT_AMT", (bcu.DISCOUNT_AMT == null) ? (object)DBNull.Value : bcu.DISCOUNT_AMT);
+                dCmd1.Parameters.AddWithValue("@STATISTICAL_CHARGES", (bcu.STATISTICAL_CHARGES == null) ? (object)DBNull.Value : bcu.STATISTICAL_CHARGES);
+                dCmd1.Parameters.AddWithValue("@BILL_AMT", bcu.BILL_AMT);
+
+                dCmd1.Parameters.AddWithValue("@AMOUNT_INWORDS", bcu.Amt_In_Words);
+                dCmd1.Parameters.AddWithValue("@ADDED_BY", HttpContext.Current.Session["EmployeeCode"].ToString());
+
+                dCmd1.ExecuteNonQuery();
+
+                RET_ID = (decimal)dCmd1.Parameters["@RET_ID"].Value;
+                bcu.ErrMsg = (string)dCmd1.Parameters["@ERR_MSG"].Value;
+
+                foreach (VM_Bill_Dtls dtls in bcu.Bill_Dtls_List)
+                {
+                    if (dtls.IsChecked)
+                    {
+                        dCmd1 = new SqlCommand("[dbo].[USP_UPDATE_BILL_TRANSPORT_CHARGE_DTLS]", conn);
+                        dCmd1.CommandType = CommandType.StoredProcedure;
+                        dCmd1.Transaction = mytrans;
+
+                        SqlParameter sqlp3 = new SqlParameter();
+                        sqlp3 = dCmd1.Parameters.Add("@RET_ID", SqlDbType.Decimal);
+                        sqlp3.Direction = ParameterDirection.Output;
+
+                        SqlParameter sqlp4 = new SqlParameter();
+                        sqlp4 = dCmd1.Parameters.Add("@ERR_MSG", SqlDbType.VarChar, 150);
+                        sqlp4.Direction = ParameterDirection.Output;
+
+
+                        dCmd1.Parameters.AddWithValue("@BILL_ID", (dtls.BILL_ID == null) ? (object)DBNull.Value : dtls.BILL_ID);
+                        dCmd1.Parameters.AddWithValue("@BILL_Det_ID", (dtls.BILL_Det_ID == null) ? (object)DBNull.Value : dtls.BILL_Det_ID);
+                        dCmd1.Parameters.AddWithValue("@AMOUNT", (dtls.AMOUNT == null) ? (object)DBNull.Value : dtls.AMOUNT);
+                        dCmd1.Parameters.AddWithValue("@HALT_AMT", (dtls.HALT_AMT == null) ? (object)DBNull.Value : dtls.HALT_AMT);
+                        dCmd1.Parameters.AddWithValue("@OTHER_AMT", (dtls.OTHER_AMT == null) ? (object)DBNull.Value : dtls.OTHER_AMT);
+                        dCmd1.Parameters.AddWithValue("@DISCOUNT_AMT", (dtls.DISCOUNT_AMT == null) ? (object)DBNull.Value : dtls.DISCOUNT_AMT);
+                        dCmd1.Parameters.AddWithValue("@STATISTICAL_CHARGES", (dtls.STATISTICAL_CHARGES == null) ? (object)DBNull.Value : dtls.STATISTICAL_CHARGES);
+                        dCmd1.Parameters.AddWithValue("@TOTAL_AMT", (dtls.TOTAL_AMT == null) ? (object)DBNull.Value : dtls.TOTAL_AMT);
+
+                        dCmd1.Parameters.AddWithValue("@CN_ID", (dtls.CN_ID == null) ? (object)DBNull.Value : dtls.CN_ID);
+                        dCmd1.Parameters.AddWithValue("@JOB_ID", (dtls.JOB_ID == null) ? (object)DBNull.Value : dtls.JOB_ID);
+                        dCmd1.Parameters.AddWithValue("@LP_ID", (dtls.LP_ID == null) ? (object)DBNull.Value : dtls.LP_ID);
+                        dCmd1.Parameters.AddWithValue("@NO_OF_TRUCK", (dtls.NO_OF_TRUCK == null) ? (object)DBNull.Value : dtls.NO_OF_TRUCK);
+                        dCmd1.Parameters.AddWithValue("@AMOUNT_IN_WORDS", (dtls.Amt_In_Words == null) ? (object)DBNull.Value : dtls.Amt_In_Words);
+                        dCmd1.Parameters.AddWithValue("@ADDED_BY", HttpContext.Current.Session["EmployeeCode"].ToString());
+
+                        dCmd1.ExecuteNonQuery();
+
+                        RET_ID = (decimal)dCmd1.Parameters["@RET_ID"].Value;
+                        bcu.ErrMsg = (string)dCmd1.Parameters["@ERR_MSG"].Value;
+
+                        if (RET_ID == -1) break;
+                    }
+                }
+
+                if (RET_ID > 0)
+                {
+                    mytrans.Commit();
+                }
+                else
+                {
+                    mytrans.Rollback();
+                }
+            }
+            catch
+            {
+                mytrans.Rollback();
+                throw;
+            }
+            finally
+            {
+                dCmd1.Dispose();
+                if (conn.State == ConnectionState.Open)
+                {
+                    conn.Close();
+                }
+                conn.Dispose();
+            }
+            return RET_ID;
+        }
+
+        #endregion
+
+        #region JOB_DETAILS_FOR_UPDATE
+
+        //________________________________________________________SHOW_____________________________________________________________
+
+
+        public DataTable JOB_DETAILS_FOR_UPDATE(string JOB_CODE, string LOGIN_BRANCH_CODE, string EMPLOYEE_CODE)
+        {
+            SqlConnection conn = new SqlConnection(logisConnStr);
+            SqlDataAdapter dAd = new SqlDataAdapter("[Log].[USP_SELECT_JOB_DETAILS_FOR_UPDATE]", conn);
+            dAd.SelectCommand.CommandType = CommandType.StoredProcedure;
+            DataSet dSet = new DataSet();
+            try
+            {
+                dAd.SelectCommand.Parameters.AddWithValue("@JOB_CODE", JOB_CODE);
+                dAd.SelectCommand.Parameters.AddWithValue("@LOGIN_BRANCH_CODE", LOGIN_BRANCH_CODE);
+                dAd.SelectCommand.Parameters.AddWithValue("@EMP_CODE", EMPLOYEE_CODE);
+
+                dAd.Fill(dSet, "Tbl_JobDetails");
+                return dSet.Tables["Tbl_JobDetails"];
+            }
+            catch
+            {
+                throw;
+            }
+            finally
+            {
+                dSet.Dispose();
+                dAd.Dispose();
+                conn.Close();
+                conn.Dispose();
+            }
+        }
+
+
+//_____________________________________________________________UPDATE__________________________________________________________
+
+
+        public string UPDATE_JOB_ORDER_DETAILS(VM_Job_Update bcu)
+        {
+            string ErrMsg = "";
+              
+            SqlConnection conn = new SqlConnection(logisConnStr);
+            conn.Open();
+            mytrans = conn.BeginTransaction();
+            SqlCommand dCmd1 = null;
+            try
+            {
+                dCmd1 = new SqlCommand("[Log].[USP_UPDATE_JOB_ORDER_CORRECTION]", conn);
+                dCmd1.CommandType = CommandType.StoredProcedure;
+                dCmd1.Transaction = mytrans;
+                 
+                SqlParameter sqlp2 = new SqlParameter();
+                sqlp2 = dCmd1.Parameters.Add("@ERRORSTR", SqlDbType.VarChar, 200);
+                sqlp2.Direction = ParameterDirection.Output;
+
+                dCmd1.Parameters.AddWithValue("@JOB_ID", bcu.JobId);
+                dCmd1.Parameters.AddWithValue("@ACTION", bcu.Action);
+                dCmd1.Parameters.AddWithValue("@CUST_ID", ( bcu.CustomerID==null)?(object)DBNull.Value:  bcu.CustomerID) ;
+
+                dCmd1.Parameters.AddWithValue("@MOVE_FOR", (bcu.MoveFor == null) ? (object)DBNull.Value : bcu.MoveFor);
+                dCmd1.Parameters.AddWithValue("@FREIGHT_RATE", (bcu.FreightID == null) ? (object)DBNull.Value : bcu.FreightID);
+                dCmd1.Parameters.AddWithValue("@TRAILER_RENT", (bcu.TrailerID == null) ? (object)DBNull.Value : bcu.TrailerID);
+               
+
+                dCmd1.Parameters.AddWithValue("@REMARKS", bcu.Remark);
+                dCmd1.Parameters.AddWithValue("@EMP_CODE", Convert.ToString(HttpContext.Current.Session["EmployeeCode"]));
+                dCmd1.ExecuteNonQuery();
+                ErrMsg = (string)dCmd1.Parameters["@ERRORSTR"].Value;
+
+                if (ErrMsg =="")
+                {
+                    mytrans.Commit();
+                }
+                else
+                {
+                    mytrans.Rollback();
+                }
+            }
+            catch
+            {
+                mytrans.Rollback();
+                throw;
+            }
+            finally
+            {
+                dCmd1.Dispose();
+                if (conn.State == ConnectionState.Open)
+                {
+                    conn.Close();
+                }
+                conn.Dispose();
+            }
+            return ErrMsg;
+        }
+
+     #endregion   
+
+
+        
+        
+        
+        
+        
+        
+        
+        
+        //______________________________________________________BillGSTUpdate For Show_______________________________________________________________
+       
+        
+        #region 
+
+        public DataSet BillGSTUpdate(string BRANCH_CODE , string BILL_NO)
+        {
+            SqlConnection conn = new SqlConnection(logisConnStr);
+            SqlDataAdapter dAd = new SqlDataAdapter("USP_SELECT_BILL_DETAILS_FOR_TRANSPORT_CHARGE_UPDATE", conn);
+            dAd.SelectCommand.CommandType = CommandType.StoredProcedure;
+            DataSet dSet = new DataSet();
+            try
+            {
+                dAd.SelectCommand.Parameters.AddWithValue("@BILL_NO", BILL_NO);
+                dAd.SelectCommand.Parameters.AddWithValue("@BRANCH_CODE", BRANCH_CODE);
+
+                dAd.Fill(dSet, "BILL_DETAILS_FOR_TRANSPORT_CHARGE_UPDATE");
+                return dSet;
+            }
+            catch
+            {
+                throw;
+            }
+            finally
+            {
+                dSet.Dispose();
+                dAd.Dispose();
+                conn.Close();
+                conn.Dispose();
+            }
+        }
+
+
+        #endregion
+
+    }
+}
+
+
