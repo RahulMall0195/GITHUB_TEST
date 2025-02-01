@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Touch to 6-Digit Code</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f0f0;
+            margin: 0;
+        }
+        .container {
+            text-align: center;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            margin-bottom: 20px;
+        }
+        .touch-area {
+            width: 200px;
+            height: 200px;
+            background-color: #007bff;
+            border-radius: 10px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            font-size: 18px;
+            user-select: none;
+        }
+        .code {
+            margin-top: 20px;
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Touch to 6-Digit Code</h1>
+        <div class="touch-area" id="touchArea">
+            Touch Here
+        </div>
+        <div class="code" id="code"></div>
+    </div>
+
+    <script>
+        const touchArea = document.getElementById('touchArea');
+        const codeDisplay = document.getElementById('code');
+
+        let touchData = [];
+
+        touchArea.addEventListener('touchstart', (event) => {
+            event.preventDefault();
+            touchData = []; // Reset touch data
+            const touch = event.touches[0];
+            touchData.push({
+                x: touch.clientX,
+                y: touch.clientY,
+                time: Date.now()
+            });
+        });
+
+        touchArea.addEventListener('touchmove', (event) => {
+            event.preventDefault();
+            const touch = event.touches[0];
+            touchData.push({
+                x: touch.clientX,
+                y: touch.clientY,
+                time: Date.now()
+            });
+        });
+
+        touchArea.addEventListener('touchend', (event) => {
+            event.preventDefault();
+            if (touchData.length > 0) {
+                // Generate a 6-digit code based on touch data
+                const code = generateCodeFromTouchData(touchData);
+                codeDisplay.textContent = `Generated Code: ${code}`;
+            }
+        });
+
+        function generateCodeFromTouchData(data) {
+            // Simple hash function to convert touch data into a 6-digit code
+            let hash = 0;
+            for (let point of data) {
+                hash = (hash + point.x + point.y + point.time) % 1000000;
+            }
+            return String(hash).padStart(6, '0');
+        }
+    </script>
+</body>
+</html>
